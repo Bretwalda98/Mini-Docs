@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Mini-Docs — One-File Word Processor</title>
+
+<!-- One-file external libs (needed for .docx import/export) -->
+<script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+
+<style>
+  :root{
+    --bg:#0b0e14;--panel:#121625;--ink:#e8ecf1;--muted:#99a3b2;--accent:#4da3ff;--accent2:#47e5a1;
+    --paper:#ffffff;--paper-ink:#111827;--bar:#0f1426;--bar2:#0b1021;--stroke:#1e2335;
+    --status-h:34px; --ruler:26px; --title-h:32px; --tab-h:36px; --ribbon-h:56px; /* ribbon-h is dynamic via JS */
+  }
+  *{box-sizing:border-box} html,body{height:100%;margin:0}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Inter,Arial,sans-serif;background:var(--bg);color:var(--ink)}
+  .shell{display:grid;grid-template-rows:auto auto auto 1fr var(--status-h);height:100%}
+
+  /* Title bar (Quick Access, Title, Window Controls) */
+  .titlebar{
+    display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:.5rem;padding:.35rem .5rem .3rem;
+    background:linear-gradient(180deg,var(--bar),var(--bar2));border-bottom:1px solid #161b2f;
+    position:fixed; top:0; left:0; right:0; z-index:10; height:var(--title-h);
+  }
+  .qat{display:flex;gap:.25rem;align-items:center}
+  .qat .btn{padding:.35rem .5rem}
+  .app-title{display:flex;align-items:center;justify-content:center;gap:.5rem;font-weight:700}
+  .app-title .docname{min-width:18ch;max-width:40vw;background:#0d1224;border:1px solid #263055;border-radius:.45rem;color:var(--ink);
+                      padding:.25rem .55rem;height:calc(var(--title-h) - 6px)}
+  .winctl{display:flex;gap:.25rem}
+  .winctl .btn{width:34px;justify-content:center}
+
+  /* Ribbon tabs */
+  .tabs{
+    display:flex;align-items:center;gap:.25rem;padding:.25rem .5rem;background:#0c1122;border-bottom:1px solid #161b2f;
+    position:fixed; left:0; right:0; top:var(--title-h); z-index:9; height:var(--tab-h);
+  }
+  .tab{appearance:none;border:none;background:transparent;color:#c9d3e6;padding:.4rem .7rem;border-radius:.4rem;cursor:pointer}
+  .tab.active{background:#101739;color:#fff;border:1px solid #263055}
+
+  /* Ribbon (groups inside active tab) */
+  .ribbon{
+    display:none;gap:.5rem;flex-wrap:wrap;align-items:center;padding:.5rem;background:#0c1122;border-bottom:1px solid #161b2f;
+    position:fixed; left:0; right:0; top:calc(var(--title-h) + var(--tab-h)); z-index:8;
+  }
+  .ribbon.active{display:flex}
+  .group{display:flex;gap:.25rem;align-items:center;padding:.35rem;background:rgba(255,255,255,.04);border:1px solid #1f2745;border-radius:.6rem}
+  .btn,.sel,.inp{appearance:none;border:1px solid #263055;background:#0d1224;color:var(--ink);border-radius:.45rem;padding:.45rem .6rem;font-size:.9rem;line-height:1;display:inline-flex;align-items:center;gap:.35rem;cursor:pointer}
+  .btn:hover{background:#101739} .sel,.inp{padding:.38rem .5rem}
+  .sp{width:1px;height:26px;background:#273052;margin:0 .3rem}
+  .hidden{display:none!important}
+
+  /* Work area with rulers (pushed down below fixed bars) */
+  .work{
+    display:grid;grid-template-columns:var(--ruler) 1fr;grid-template-rows:var(--ruler) 1fr;background:#0a0f1e;
+    margin-top:calc(var(--title-h) + var(--tab-h) + var(--ribbon-h));
+  }
+  .top-left-corner{background:#0e1529;border-right:1px solid #1b2444;border-bottom:1px solid #1b2444}
+  .hruler-wrap{position:relative;overflow:hidden;background:#0e1529;border-bottom:1px solid #1b2444}
+  .vruler-wrap{position:relative;overflow:hidden;background:#0e1529;border-right:1px solid #1b2444}
+  /* Make canvases fill the ruler areas */
+  canvas.hruler{width:100%;height:100%;display:block;image-rendering:crisp-edges}
+  canvas.vruler{width:100%;height:100%;display:block;image-rendering:crisp-edges}
+
+  .viewport{position:relative;overflow:auto;background:#0a0f1e}
+  .page-wrap{position:relative;display:flex;justify-content:center;align-items:flex-start;
+             padding:32px 24px calc(48px + var(--status-h)) 24px;min-height:100%}
+  .page{width:210mm;min-height:297mm;background:var(--paper);color:var(--paper-ink);
+        box-shadow:0 20px 60px rgba(0,0,0,.45);border-radius:8px;padding:25mm 22mm;outline:none;line-height:1.5;font-size:11.5pt;transform-origin:0 0}
+  .page h1{font-size:24pt;margin:1.1em 0 .35em} .page h2{font-size:18pt;margin:1em 0 .35em} .page h3{font-size:14pt;margin:.9em 0 .35em}
+  .page p{margin:.45em 0} .page blockquote{border-left:4px solid #9aa4b2;margin:1em 0;padding:0 .8em;color:#6b7280}
+  .page pre{white-space:pre-wrap;background:#f6f8ff;border:1px solid #e5e7eb;border-radius:6px;padding:.6rem}
+  .page a{color:#2563eb} .page table{border-collapse:collapse;width:100%;margin:.6em 0}
+  .page td,.page th{border:1px solid #cfd6e4;padding:.35rem} .page img{max-width:100%}
+
+  /* Status bar (fixed to bottom) */
+  .status{
+    display:flex;align-items:center;gap:.6rem;padding:0 .6rem;background:#0c1122;color:#c9d3e6;border-top:1px solid #161b2f;
+    position:fixed; bottom:0; left:0; right:0; height:var(--status-h); z-index:5;
+  }
+  .status .dot{width:8px;height:8px;border-radius:50%;background:#10b981}
+  .status .muted{color:#93a0b3}
+  .grow{flex:1}
+  .viewbtn{padding:.25rem .45rem}
+  .zoom{display:flex;align-items:center;gap:.35rem}
+  .zoom input[type="range"]{width:140px}
+
+  /* Light theme */
+  body.light{background:#f2f5fb;color:#0f172a}
+  body.light .titlebar{background:linear-gradient(180deg,#f8fafc,#eef2ff);border-bottom:1px solid #dbe2f3}
+  body.light .tabs, body.light .ribbon, body.light .status{background:#eef2ff;border-color:#dbe2f3}
+  body.light .group{background:#f5f7ff;border-color:#dbe2f3}
+  body.light .btn{background:#ffffff;border-color:#d5ddf0;color:#0f172a}
+  body.light .page{background:#fff;color:#111827;box-shadow:0 18px 50px rgba(0,20,60,.15)}
+
+  /* Dialog */
+  dialog{border:1px solid #263055;background:#0d1224;color:#e6edf7;border-radius:.6rem}
+  dialog::backdrop{background:rgba(0,0,0,.55)}
+
+  @media print{
+    .titlebar,.tabs,.ribbon,.status,.hruler-wrap,.vruler-wrap,.top-left-corner{display:none!important}
+    .work{grid-template-columns:0 1fr;grid-template-rows:0 1fr;margin-top:0}
+    .page-wrap{padding:0} .page{box-shadow:none;width:auto;min-height:auto;padding:0;background:#fff;transform:none}
+    body{background:#fff}
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- TITLE BAR -->
+  <div class="titlebar">
+    <div class="qat">
+      <button class="btn" id="qat-save" title="Save as .docx (Ctrl+S)">💾</button>
+      <button class="btn" id="qat-undo" title="Undo (Ctrl+Z)">⤺</button>
+      <button class="btn" id="qat-redo" title="Redo (Ctrl+Y)">⤻</button>
+      <button class="btn" id="office" title="Menu">🟡</button>
+    </div>
+    <div class="app-title">
+      <strong>Mini-Docs</strong>
+      <input id="docTitle" class="docname" value="Untitled Document" aria-label="Document title" />
+    </div>
+    <div class="winctl">
+      <button class="btn" id="helpBtn" title="Help">?</button>
+      <button class="btn" title="Minimise">—</button>
+      <button class="btn" title="Maximise">▢</button>
+      <button class="btn" title="Close">✕</button>
+    </div>
+  </div>
+
+  <!-- RIBBON TABS -->
+  <div class="tabs" role="tablist" aria-label="Ribbon Tabs">
+    <button class="tab active" data-tab="home">Home</button>
+    <button class="tab" data-tab="insert">Insert</button>
+    <button class="tab" data-tab="view">View</button>
+  </div>
+
+  <!-- RIBBON: HOME -->
+  <div class="ribbon active" id="tab-home" role="toolbar" aria-label="Home">
+    <div class="group">
+      <button class="btn" id="undo" title="Undo (Ctrl+Z)">⤺</button>
+      <button class="btn" id="redo" title="Redo (Ctrl+Y)">⤻</button>
+      <div class="sp"></div>
+      <button class="btn" id="clearFmt" title="Clear formatting">⎚</button>
+    </div>
+    <div class="group">
+      <select id="styleSel" class="sel" title="Style">
+        <option value="p">Normal</option>
+        <option value="h1">Heading 1</option>
+        <option value="h2">Heading 2</option>
+        <option value="h3">Heading 3</option>
+        <option value="blockquote">Quote</option>
+        <option value="code">Code Block</option>
+      </select>
+      <select id="fontSize" class="sel" title="Font size">
+        <option>11.5pt</option><option>10pt</option><option>12pt</option><option>14pt</option><option>18pt</option><option>24pt</option>
+      </select>
+      <input id="color" class="inp" type="color" title="Text colour" />
+      <button class="btn" id="highlight" title="Highlight">🖍</button>
+    </div>
+    <div class="group">
+      <button class="btn" data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>
+      <button class="btn" data-cmd="italic" title="Italic (Ctrl+I)"><i>I</i></button>
+      <button class="btn" data-cmd="underline" title="Underline (Ctrl+U)"><u>U</u></button>
+      <button class="btn" data-cmd="strikeThrough" title="Strikethrough">S̶</button>
+      <div class="sp"></div>
+      <button class="btn" data-cmd="justifyLeft" title="Align Left">⟸</button>
+      <button class="btn" data-cmd="justifyCenter" title="Align Center">▮</button>
+      <button class="btn" data-cmd="justifyRight" title="Align Right">⟹</button>
+      <button class="btn" data-cmd="justifyFull" title="Justify">≡</button>
+      <div class="sp"></div>
+      <button class="btn" data-cmd="insertUnorderedList" title="Bulleted list">• • •</button>
+      <button class="btn" data-cmd="insertOrderedList" title="Numbered list">1.2.3.</button>
+      <button class="btn" data-cmd="outdent" title="Decrease indent">⇤</button>
+      <button class="btn" data-cmd="indent" title="Increase indent">⇥</button>
+      <button class="btn" id="lineSpacing" title="Line spacing">↕</button>
+    </div>
+  </div>
+
+  <!-- RIBBON: INSERT -->
+  <div class="ribbon" id="tab-insert" role="toolbar" aria-label="Insert">
+    <div class="group">
+      <label for="imgInput" class="btn" title="Insert image">🖼</label>
+      <input id="imgInput" type="file" accept="image/*" class="hidden" />
+      <button class="btn" id="insertTable" title="Insert table">▦</button>
+      <button class="btn" id="insertLink" title="Insert link">🔗</button>
+    </div>
+    <div class="group">
+      <button class="btn" id="openDocx" title="Open .docx">📂 .docx</button>
+      <input id="openFile" type="file" accept=".docx" class="hidden" />
+      <button class="btn" id="saveDocx" title="Save as .docx">💾 .docx</button>
+      <button class="btn" id="printDoc" title="Print / Save PDF">🖨</button>
+    </div>
+  </div>
+
+  <!-- RIBBON: VIEW -->
+  <div class="ribbon" id="tab-view" role="toolbar" aria-label="View">
+    <div class="group">
+      <button class="btn" id="toggleTheme" title="Toggle light/dark">☾/☼</button>
+      <button class="btn" id="toggleRulers" title="Show/Hide Rulers">📏</button>
+      <button class="btn" id="fitToWidth" title="Zoom: Fit to width">↔</button>
+      <button class="btn" id="zoomReset" title="Zoom: 100%">100%</button>
+    </div>
+  </div>
+
+  <!-- WORK AREA: rulers + viewport -->
+  <div class="work">
+    <div class="top-left-corner"></div>
+    <div class="hruler-wrap"><canvas id="hruler" class="hruler" height="26"></canvas></div>
+    <div class="vruler-wrap"><canvas id="vruler" class="vruler" width="26"></canvas></div>
+
+    <div class="viewport" id="viewport">
+      <div class="page-wrap">
+        <article id="page" class="page" contenteditable="true" spellcheck="true" role="document" aria-label="Document area">
+          <h1>Report Title</h1>
+          <p><b>Abstract:</b> Welcome to <i>Mini-Docs</i>. Type here. Use the 💾 button to export a .docx, and 📂 to open one.</p>
+          <h2>Features</h2>
+          <ul>
+            <li>Headings, lists, bold/italic/underline/strike, links, quotes, code blocks.</li>
+            <li>Open/Save .docx (text-first). Print for PDF.</li>
+          </ul>
+          <blockquote>Quotes supported.</blockquote>
+          <pre>// code block
+function hello(){ return "world"; }</pre>
+        </article>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATUS BAR -->
+  <div class="status">
+    <span class="dot" id="saveDot" title="Status"></span>
+    <span id="saveStatus" class="muted">Ready</span>
+    <span>•</span>
+    <span id="pageInfo">Page 1 of 1</span>
+    <span>•</span>
+    <span id="wc">0 words</span>
+    <span class="grow"></span>
+    <div class="viewbtns">
+      <button class="btn viewbtn" id="layoutPrint" title="Print Layout">🗎</button>
+      <button class="btn viewbtn" id="layoutWeb" title="Web Layout">🌐</button>
+    </div>
+    <div class="zoom">
+      <span id="zoomLabel">100%</span>
+      <input id="zoomRange" type="range" min="25" max="200" value="100" />
+    </div>
+    <input id="findInp" class="inp" placeholder="Find (Ctrl+F)" />
+    <input id="replInp" class="inp" placeholder="Replace" />
+    <button class="btn" id="findPrev" title="Find previous">↑</button>
+    <button class="btn" id="findNext" title="Find next">↓</button>
+    <button class="btn" id="doReplace" title="Replace">⟲</button>
+    <button class="btn" id="doReplaceAll" title="Replace all">⟲⟲</button>
+  </div>
+</div>
+
+<!-- MENU & HELP DIALOGS -->
+<dialog id="menuDlg">
+  <h3>File</h3>
+  <p><button class="btn" id="newDoc">New</button></p>
+  <p><button class="btn" id="openBtn2">Open .docx</button></p>
+  <p><button class="btn" id="saveBtn2">Save as .docx</button></p>
+  <p><button class="btn" id="printBtn2">Print / Save PDF</button></p>
+  <p style="margin-top:.5rem"><button class="btn" id="menuClose">Close</button></p>
+</dialog>
+
+<dialog id="helpDlg">
+  <h3>Mini-Docs Help</h3>
+  <ul>
+    <li><b>Ctrl+B / I / U</b> formatting; <b>Ctrl+S</b> save .docx; <b>Ctrl+F</b> find.</li>
+    <li>Use the <b>View</b> tab or the status bar slider to zoom & show rulers.</li>
+    <li>.docx import/export is text-first (basic formatting, headings, lists, links).</li>
+  </ul>
+  <p><button class="btn" id="helpClose">Close</button></p>
+</dialog>
+
+<script>
+/* ---------- Shortcuts ---------- */
+const $ = s=>document.querySelector(s);
+const page = $('#page');
+const viewport = $('#viewport');
+const titleInp = $('#docTitle');
+const saveStatus=$('#saveStatus'); const saveDot=$('#saveDot');
+
+/* ---------- Ribbon Tabs ---------- */
+function setActiveTab(btn){
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.ribbon').forEach(x=>x.classList.remove('active'));
+  btn.classList.add('active');
+  $('#tab-'+btn.dataset.tab).classList.add('active');
+  updateTopOffsets(); // ribbon height may have changed
+}
+document.querySelectorAll('.tab').forEach(t=> t.addEventListener('click', ()=>setActiveTab(t)));
+
+/* ---------- Exec helpers ---------- */
+function exec(cmd,val=null){ document.execCommand(cmd,false,val); markDirty(); page.focus(); }
+document.querySelectorAll('.btn[data-cmd]').forEach(b=>b.onclick=()=>exec(b.dataset.cmd));
+$('#undo').onclick=()=>exec('undo'); $('#redo').onclick=()=>exec('redo'); $('#clearFmt').onclick=()=>exec('removeFormat');
+$('#qat-undo').onclick=()=>$('#undo').click(); $('#qat-redo').onclick=()=>$('#redo').click();
+
+/* ---------- Formatting extras ---------- */
+$('#highlight').onclick=()=>{document.execCommand('styleWithCSS',false,true); exec('backColor','rgb(255,243,163)'); document.execCommand('styleWithCSS',false,false);};
+$('#lineSpacing').onclick=()=>{
+  const sel=window.getSelection(); if(!sel.rangeCount) return;
+  let n=sel.anchorNode; while(n&&n!==page&&!(n.nodeType===1&&/^(P|H1|H2|H3|LI|DIV|BLOCKQUOTE|PRE)$/i.test(n.tagName))) n=n.parentNode;
+  if(n&&n.style){ const cs=getComputedStyle(n); const cur=parseFloat(cs.lineHeight)/parseFloat(cs.fontSize); const next=cur<1.25?1.5:(cur<1.75?2.0:1.2); n.style.lineHeight=next; markDirty(); }
+};
+$('#fontSize').onchange=e=>{
+  document.execCommand('styleWithCSS',false,true);
+  exec('fontSize',3);
+  page.querySelectorAll('font[size="3"]').forEach(el=>{
+    const s=document.createElement('span'); s.style.fontSize=e.target.value; s.innerHTML=el.innerHTML; el.replaceWith(s);
+  });
+  document.execCommand('styleWithCSS',false,false);
+};
+$('#styleSel').onchange=e=>wrapBlock(e.target.value);
+$('#color').oninput=e=>{document.execCommand('styleWithCSS',false,true); exec('foreColor', e.target.value); document.execCommand('styleWithCSS',false,false);};
+$('#insertLink').onclick=()=>{const url=prompt('Enter URL','https://'); if(url) exec('createLink',url);};
+$('#imgInput').onchange=e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader(); r.onload=()=>{const img=document.createElement('img'); img.src=r.result; img.alt=f.name; insertNode(img);}; r.readAsDataURL(f); e.target.value='';
+};
+$('#insertTable').onclick=()=>{
+  const rows=Math.max(1,Math.min(parseInt(prompt('Rows?','2')||'2',10),20));
+  const cols=Math.max(1,Math.min(parseInt(prompt('Columns?','2')||'2',10),12));
+  const tbl=document.createElement('table'); const tb=document.createElement('tbody');
+  for(let r=0;r<rows;r++){ const tr=document.createElement('tr');
+    for(let c=0;c<cols;c++){ const cell=document.createElement(r? 'td':'th'); cell.textContent=r?`R${r}C${c+1}`:`H${c+1}`; tr.appendChild(cell);}
+    tb.appendChild(tr);
+  } tbl.appendChild(tb); insertNode(tbl);
+};
+
+function wrapBlock(tag){
+  const sel=window.getSelection(); if(!sel.rangeCount) return;
+  let block=sel.anchorNode; while(block&&block!==page&&!(block.nodeType===1&&/^(P|H1|H2|H3|BLOCKQUOTE|PRE|DIV)$/i.test(block.tagName))) block=block.parentNode;
+  let newEl;
+  if(tag==='code'){ newEl=document.createElement('pre'); newEl.innerHTML=block?block.innerHTML:sel.toString(); }
+  else if(tag==='blockquote'){ newEl=document.createElement('blockquote'); newEl.innerHTML=block?block.innerHTML:sel.toString(); }
+  else if(tag==='p' || /^h[1-3]$/.test(tag)){ newEl=document.createElement(tag); newEl.innerHTML=block?block.innerHTML:sel.toString(); }
+  if(block&&block!==page) block.replaceWith(newEl); else exec('formatBlock','<'+(tag==='code'?'pre':tag)+'>');
+  markDirty();
+}
+function insertNode(node){
+  const sel=window.getSelection(); if(!sel.rangeCount){ page.appendChild(node); return; }
+  const range=sel.getRangeAt(0); range.deleteContents(); range.insertNode(node); node.scrollIntoView({block:'center'});
+}
+
+/* ---------- Status & wordcount ---------- */
+let wcTimer=null; function updateWordCount(){ const text=page.innerText||''; const words=(text.match(/\b[\w’'-]+\b/g)||[]).length; $('#wc').textContent=`${words} words`; }
+function updateWordCountSoon(){ clearTimeout(wcTimer); wcTimer=setTimeout(updateWordCount,120); }
+function markDirty(){ saveStatus.textContent='Edited'; saveDot.style.background='#f59e0b'; updateWordCountSoon(); }
+page.addEventListener('input', markDirty);
+titleInp.addEventListener('input', markDirty);
+
+/* ---------- Theme ---------- */
+const themeKey='minidocs-theme'; if(localStorage.getItem(themeKey)==='light') document.body.classList.add('light');
+$('#toggleTheme').onclick=()=>{ document.body.classList.toggle('light'); localStorage.setItem(themeKey, document.body.classList.contains('light')?'light':'dark'); };
+
+/* ---------- Find / Replace ---------- */
+const findInp=$('#findInp'), replInp=$('#replInp'); let lastMatches=[], lastIdx=-1;
+function textNodes(root){ const out=[]; const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,{acceptNode:n=>n.nodeValue.trim()?NodeFilter.FILTER_ACCEPT:NodeFilter.FILTER_REJECT}); while(w.nextNode()) out.push(w.currentNode); return out; }
+function findAll(q){ if(!q){ lastMatches=[]; return; } const nodes=textNodes(page); const m=[]; for(const n of nodes){ const t=n.nodeValue; let i=0; while(true){ const at=t.toLowerCase().indexOf(q.toLowerCase(),i); if(at<0)break; m.push({node:n,start:at,end:at+q.length}); i=at+q.length; } } lastMatches=m; }
+function selectMatch(i){ if(!lastMatches.length) return; const m=lastMatches[i]; const r=document.createRange(); r.setStart(m.node,m.start); r.setEnd(m.node,m.end); const s=window.getSelection(); s.removeAllRanges(); s.addRange(r); r.startContainer.parentElement?.scrollIntoView({block:'center'}); lastIdx=i; }
+findInp.addEventListener('input',()=>{findAll(findInp.value); if(lastMatches.length) selectMatch(0);});
+$('#findNext').onclick=()=>{ if(!lastMatches.length) return; selectMatch((lastIdx+1)%lastMatches.length); };
+$('#findPrev').onclick=()=>{ if(!lastMatches.length) return; selectMatch((lastIdx-1+lastMatches.length)%lastMatches.length); };
+$('#doReplace').onclick=()=>{ const s=window.getSelection(); if(!s.rangeCount||!findInp.value) return; if(s.toString().toLowerCase()===findInp.value.toLowerCase()){ document.execCommand('insertText',false,replInp.value||''); markDirty(); findAll(findInp.value); if(lastMatches.length) selectMatch(0);} };
+$('#doReplaceAll').onclick=()=>{ if(!findInp.value) return; const re=new RegExp(findInp.value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi'); page.innerHTML=page.innerHTML.replace(re, (replInp.value||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')); markDirty(); findAll(findInp.value); lastIdx=-1; };
+
+/* ---------- Print ---------- */
+$('#printDoc').onclick=()=>window.print();
+
+/* ---------- Keyboard shortcuts ---------- */
+document.addEventListener('keydown',e=>{
+  if(e.ctrlKey && !e.altKey){
+    if(/^[bBiIuUfFpPsS]$/.test(e.key)){ e.preventDefault(); }
+    if(e.key==='b'||e.key==='B') exec('bold');
+    if(e.key==='i'||e.key==='I') exec('italic');
+    if(e.key==='u'||e.key==='U') exec('underline');
+    if(e.key==='f'||e.key==='F'){ $('#findInp').focus(); $('#findInp').select(); }
+    if(e.key==='p'||e.key==='P') window.print();
+    if(e.key==='s'||e.key==='S') exportDocx(); // Ctrl+S saves .docx
+  }
+});
+
+/* =========================
+   DOCX EXPORT (docx)
+   ========================= */
+async function exportDocx(){
+  if(!(window.docx&&docx.Document)){ alert('DOCX library not loaded. Check your internet connection.'); return; }
+  const doc = new docx.Document({
+    creator: "Mini-Docs",
+    title: titleInp.value || "Document",
+    styles: {
+      paragraphStyles: [
+        {id:"Normal", name:"Normal", basedOn:"Normal", run:{size:24}, paragraph:{}},
+        {id:"Heading1", name:"Heading 1", basedOn:"Normal", next:"Normal", quickFormat:true, run:{size:48,bold:true}, paragraph:{spacing:{after:120}}},
+        {id:"Heading2", name:"Heading 2", basedOn:"Normal", next:"Normal", quickFormat:true, run:{size:36,bold:true}, paragraph:{spacing:{after:80}}},
+        {id:"Heading3", name:"Heading 3", basedOn:"Normal", next:"Normal", quickFormat:true, run:{size:28,bold:true}, paragraph:{spacing:{after:60}}},
+        {id:"Quote", name:"Quote", basedOn:"Normal", run:{italics:true, color:"6b7280"}, paragraph:{indent:{left:720}, border:{left:{color:"9aa4b2",space:1,size:6}}}},
+        {id:"Code", name:"Code", basedOn:"Normal", run:{font:"Consolas"}}
+      ]
+    }
+  });
+
+  const children = [];
+  function pushParagraph(runs, style){ children.push(new docx.Paragraph({children:runs, style})); }
+  function textRun(t, mark){ return new docx.TextRun({text:t, bold:!!mark?.bold, italics:!!mark?.ital, underline: mark?.under? {}:undefined, strike: !!mark?.strike}); }
+  function linkRun(url, label){ return new docx.ExternalHyperlink({link: url, children: [ new docx.TextRun({text: label||url, style: "Hyperlink"}) ]}); }
+
+  function walk(node, buf=[], mark={}){
+    if(node.nodeType===3){
+      const txt=node.nodeValue.replace(/\s+/g,' ').replace(/\u00A0/g,' ');
+      if(txt) buf.push(textRun(txt, mark));
+      return buf;
+    }
+    if(node.nodeType!==1) return buf;
+    const tag=node.tagName.toLowerCase();
+    if(tag==='b'||tag==='strong') mark={...mark,bold:true};
+    if(tag==='i'||tag==='em') mark={...mark,ital:true};
+    if(tag==='u') mark={...mark,under:true};
+    if(tag==='s'||tag==='strike'||tag==='del') mark={...mark,strike:true};
+    if(tag==='a' && node.getAttribute('href')){
+      const label=node.textContent||node.getAttribute('href');
+      buf.push(linkRun(node.getAttribute('href'), label)); return buf;
+    }
+    if(tag==='br'){ buf.push(new docx.TextRun({text:"\n"})); return buf; }
+    for(const ch of node.childNodes) walk(ch, buf, mark);
+    return buf;
+  }
+
+  function handleBlock(el){
+    const tag = el.tagName?.toLowerCase();
+    if(tag==='h1'||tag==='h2'||tag==='h3'){ const runs=walk(el); const style = tag==='h1'?'Heading1':(tag==='h2'?'Heading2':'Heading3'); pushParagraph(runs, style); return; }
+    if(tag==='blockquote'){ const runs=walk(el); pushParagraph(runs, 'Quote'); return; }
+    if(tag==='pre'){ const txt=el.innerText.replace(/\r?\n/g,"\n"); children.push(new docx.Paragraph({style:'Code', children:[new docx.TextRun({text:txt})]})); return; }
+    if(tag==='ul' || tag==='ol'){
+      const items=[...el.children].filter(li=>li.tagName?.toLowerCase()==='li');
+      items.forEach(li=>{ const runs=walk(li); children.push(new docx.Paragraph({children:runs, numbering:{reference:'list', level:0}})); });
+      return;
+    }
+    if(tag==='table'){
+      const rows=[...el.querySelectorAll('tr')];
+      rows.forEach(r=>{ const cells=[...r.children].map(td=>td.innerText.trim().replace(/\s+/g,' ')); pushParagraph([new docx.TextRun(cells.join(' | '))], 'Normal');});
+      return;
+    }
+    if(tag==='img'){ pushParagraph([new docx.TextRun(`[${el.getAttribute('alt')||'Image'}]`)], 'Normal'); return; }
+    const runs=walk(el); pushParagraph(runs,'Normal');
+  }
+
+  doc.Numbering.createConcreteNumbering('list', [{
+    level: 0, format: docx.LevelFormat.BULLET, text: '•', alignment: docx.AlignmentType.LEFT,
+    style: { paragraph: { indent: { left: 720, hanging: 360 } } }
+  }]);
+
+  [...page.childNodes].forEach(n=> n.nodeType===3 ? pushParagraph([new docx.TextRun(n.nodeValue)], 'Normal') : handleBlock(n));
+  doc.addSection({children});
+  const blob = await docx.Packer.toBlob(doc);
+  triggerDownload(blob, (titleInp.value||'Document')+'.docx');
+  saveStatus.textContent='Exported .docx'; saveDot.style.background='#10b981';
+}
+function triggerDownload(blob, name){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click(); URL.revokeObjectURL(a.href); }
+$('#saveDocx').onclick=exportDocx; $('#qat-save').onclick=exportDocx;
+
+/* =========================
+   DOCX IMPORT (JSZip)
+   ========================= */
+$('#openDocx').onclick=()=>$('#openFile').click();
+$('#openBtn2').onclick=()=>$('#openDocx').click();
+$('#openFile').addEventListener('change', async (e)=>{
+  const f=e.target.files[0]; if(!f) return;
+  try{
+    const zip = await JSZip.loadAsync(f);
+    const xmlStr = await zip.file('word/document.xml').async('string');
+    const parser = new DOMParser(); const xml = parser.parseFromString(xmlStr,'application/xml');
+    const wNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    const body = xml.getElementsByTagNameNS(wNS,'body')[0];
+    const out = [];
+    function escapeHtml(s){ return (s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function textFromRun(r){
+      const tNodes = r.getElementsByTagNameNS(wNS,'t'); let text=''; for(const t of tNodes) text += t.textContent;
+      const rPr = r.getElementsByTagNameNS(wNS,'rPr')[0];
+      const bold = rPr && rPr.getElementsByTagNameNS(wNS,'b').length;
+      const ital = rPr && rPr.getElementsByTagNameNS(wNS,'i').length;
+      const under = rPr && rPr.getElementsByTagNameNS(wNS,'u').length;
+      const strike = rPr && rPr.getElementsByTagNameNS(wNS,'strike').length;
+      let html = escapeHtml(text);
+      if(strike) html = `<s>${html}</s>`;
+      if(under) html = `<u>${html}</u>`;
+      if(ital) html = `<i>${html}</i>`;
+      if(bold) html = `<b>${html}</b>`;
+      return html;
+    }
+    for(const p of body.getElementsByTagNameNS(wNS,'p')){
+      const pPr = p.getElementsByTagNameNS(wNS,'pPr')[0];
+      let tag = 'p';
+      const pStyle = pPr && pPr.getElementsByTagNameNS(wNS,'pStyle')[0]?.getAttributeNS(wNS,'val');
+      if(pStyle==='Heading1') tag='h1'; else if(pStyle==='Heading2') tag='h2'; else if(pStyle==='Heading3') tag='h3';
+      let line=''; const runs = p.getElementsByTagNameNS(wNS,'r'); for(const r of runs) line += textFromRun(r);
+      for(const br of p.getElementsByTagNameNS(wNS,'br')) line += '<br>';
+      out.push(`<${tag}>${line||'<br>'}</${tag}>`);
+    }
+    page.innerHTML = out.join('\n');
+    titleInp.value = f.name.replace(/\.docx$/i,'');
+    saveStatus.textContent='Opened .docx'; saveDot.style.background='#10b981'; updateWordCount();
+  }catch(err){
+    console.error(err);
+    alert('Could not open .docx (unsupported/invalid). This importer reads text, headings, and basic formatting.');
+  }
+  e.target.value='';
+});
+
+/* ---------- Menu & Help ---------- */
+const menuDlg = $('#menuDlg'); const helpDlg=$('#helpDlg');
+$('#office').onclick=()=>menuDlg.showModal();
+$('#menuClose').onclick=()=>menuDlg.close();
+$('#helpBtn').onclick=()=>helpDlg.showModal();
+$('#helpClose').onclick=()=>helpDlg.close();
+$('#newDoc').onclick=()=>{ page.innerHTML="<p></p>"; titleInp.value="Untitled Document"; markDirty(); };
+$('#saveBtn2').onclick=()=>exportDocx();
+$('#printBtn2').onclick=()=>window.print();
+
+/* ---------- Layout toggles ---------- */
+$('#layoutWeb').onclick=()=>{ document.body.classList.add('web'); };
+$('#layoutPrint').onclick=()=>{ document.body.classList.remove('web'); };
+
+/* ---------- Zoom + Rulers ---------- */
+const hruler = $('#hruler'), vruler = $('#vruler');
+const hrx = hruler.getContext('2d'), vrx = vruler.getContext('2d');
+let zoom = 1.0; // 1 = 100%
+function setZoom(z){
+  zoom = Math.min(2, Math.max(.25, z));
+  $('#zoomRange').value = Math.round(zoom*100);
+  $('#zoomLabel').textContent = Math.round(zoom*100)+'%';
+  page.style.transform = `scale(${zoom})`;
+  updateRulers();
+}
+$('#zoomRange').addEventListener('input', e=> setZoom(e.target.value/100));
+$('#zoomReset').onclick=()=>setZoom(1);
+$('#fitToWidth').onclick=()=>{
+  const vp = viewport.clientWidth - 48;
+  const pw = page.getBoundingClientRect().width / zoom; // unscaled width in px
+  setZoom( Math.max(0.25, Math.min(2, vp/pw)) );
+};
+viewport.addEventListener('scroll', updateRulers);
+window.addEventListener('resize', ()=>{ updateRulers(); updateTopOffsets(); });
+
+let rulersVisible = true;
+function updateRulers(){
+  const pr = window.devicePixelRatio||1;
+  // Horizontal
+  const w = hruler.clientWidth, h = hruler.clientHeight;
+  hruler.width = Math.max(1, Math.floor(w*pr)); hruler.height = Math.max(1, Math.floor(h*pr));
+  hrx.setTransform(pr,0,0,pr,0,0); hrx.clearRect(0,0,w,h);
+  // Vertical
+  const vw = vruler.clientWidth, vh = vruler.clientHeight;
+  vruler.width = Math.max(1, Math.floor(vw*pr)); vruler.height = Math.max(1, Math.floor(vh*pr));
+  vrx.setTransform(pr,0,0,pr,0,0); vrx.clearRect(0,0,vw,vh);
+
+  // Work out page position relative to viewport
+  const vpRect = viewport.getBoundingClientRect();
+  const pgRect = page.getBoundingClientRect();
+
+  // px per cm on page after zoom
+  const pxPerCm = 37.795 * zoom;
+
+  // Horizontal ruler (top)
+  const leftOffset = pgRect.left - vpRect.left;
+  hrx.fillStyle = '#0e1529'; hrx.fillRect(0,0,w,h);
+  hrx.strokeStyle = '#556089'; hrx.fillStyle = '#cdd7ff';
+  const startCm = Math.floor((-leftOffset)/pxPerCm) - 1;
+  const endCm = Math.ceil((w - leftOffset)/pxPerCm) + 1;
+  for(let cm=startCm; cm<=endCm; cm++){
+    const x = Math.round(leftOffset + cm*pxPerCm) + .5;
+    hrx.beginPath(); hrx.moveTo(x,h); hrx.lineTo(x,h-14); hrx.stroke();
+    if(cm%5===0){ hrx.fillText(String(cm), x+3, 11); }
+    const mmStep = pxPerCm/10;
+    for(let mm=1; mm<10; mm++){
+      const mx = x + mm*mmStep;
+      if(mx<0||mx>w) continue;
+      hrx.beginPath(); hrx.moveTo(mx,h); hrx.lineTo(mx,h-(mm===5?10:7)); hrx.stroke();
+    }
+  }
+
+  // Vertical ruler (left)
+  const topOffset = pgRect.top - vpRect.top;
+  vrx.fillStyle = '#0e1529'; vrx.fillRect(0,0,vw,vh);
+  vrx.strokeStyle = '#556089'; vrx.fillStyle = '#cdd7ff';
+  const startVCm = Math.floor((-topOffset)/pxPerCm) - 1;
+  const endVCm = Math.ceil((vh - topOffset)/pxPerCm) + 1;
+  for(let cm=startVCm; cm<=endVCm; cm++){
+    const y = Math.round(topOffset + cm*pxPerCm) + .5;
+    vrx.beginPath(); vrx.moveTo(vw,y); vrx.lineTo(vw-14,y); vrx.stroke();
+    if(cm%5===0){ vrx.save(); vrx.translate(12,y-2); vrx.rotate(-Math.PI/2); vrx.fillText(String(cm),0,0); vrx.restore(); }
+    const mmStep = pxPerCm/10;
+    for(let mm=1; mm<10; mm++){
+      const my = y + mm*mmStep;
+      if(my<0||my>vh) continue;
+      vrx.beginPath(); vrx.moveTo(vw,my); vrx.lineTo(vw-(mm===5?10:7),my); vrx.stroke();
+    }
+  }
+}
+function toggleRulers(show){
+  rulersVisible = show ?? !rulersVisible;
+  document.querySelector('.hruler-wrap').style.display = rulersVisible?'block':'none';
+  document.querySelector('.vruler-wrap').style.display = rulersVisible?'block':'none';
+  document.querySelector('.top-left-corner').style.display = rulersVisible?'block':'none';
+  updateRulers();
+}
+$('#toggleRulers').onclick=()=>toggleRulers();
+setZoom(1); updateRulers();
+
+/* ---------- Keep bars fixed: compute ribbon height & push work area ---------- */
+function updateTopOffsets(){
+  const activeRibbon = document.querySelector('.ribbon.active');
+  const h = activeRibbon ? activeRibbon.offsetHeight : 0;
+  document.documentElement.style.setProperty('--ribbon-h', h + 'px');
+}
+updateTopOffsets();
+
+/* ---------- Quick-access mirror buttons ---------- */
+$('#printDoc').onclick=()=>window.print();
+$('#qat-save').title = 'Save as .docx (Ctrl+S)';
+
+/* ---------- Page info ---------- */
+$('#pageInfo').textContent = 'Page 1 of 1';
+
+/* ---------- Init ---------- */
+updateWordCount(); saveStatus.textContent='Ready';
+
+/* ---------- Extra shortcuts for menu ---------- */
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){ menuDlg.open && menuDlg.close(); helpDlg.open && helpDlg.close(); }
+});
+</script>
+</body>
+</html>
